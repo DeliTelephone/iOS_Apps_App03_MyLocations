@@ -1,8 +1,9 @@
 //
 //  HUDView.swift
 //  MyLocations
+//  MyLocations
 //
-//  Created by Fox on 2/12/23.
+//  Created by Nick "Fox" Borer on 02/12/2023.
 //
 
 import Foundation

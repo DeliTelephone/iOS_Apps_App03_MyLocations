@@ -8,6 +8,8 @@
 import Foundation
 import UIKit
 import CoreLocation
+import CoreData
+
 
 private let dateFormatter: DateFormatter =
 {
@@ -20,12 +22,35 @@ private let dateFormatter: DateFormatter =
 class LocationDetailsViewController: UITableViewController
 {
    
+   var managedObjectContext: NSManagedObjectContext!
+   
+   var image: UIImage?
+   var observer: Any!
+   
    var coordinate = CLLocationCoordinate2D(
       latitude: 0,
       longitude: 0)
    
    var placemark: CLPlacemark?
    var categoryName = "No Category"
+   var descriptionText = ""
+   var date = Date()
+   var locationToEdit: Location?
+   {
+      didSet{
+	if let location = locationToEdit
+	  {
+	   descriptionText = location.locationDesription
+	   categoryName = location.category
+	   date = location.date
+	   coordinate = CLLocationCoordinate2DMake(
+	    location.latitude,
+	    location.longitude)
+	   placemark = location.placemark
+	  }
+	}
+     }
+   
    
    
    @IBOutlet var descriptionTextView: UITextView!
@@ -35,6 +60,12 @@ class LocationDetailsViewController: UITableViewController
    @IBOutlet var addressLabel: UILabel!
    @IBOutlet var dateLabel: UILabel!
    
+   @IBOutlet var imageView: UIImageView!
+   @IBOutlet var addPhotoLabel: UILabel!
+   @IBOutlet var imageHeight: NSLayoutConstraint!
+   
+   
+   
    //MARK: - Actions
    @IBAction func done()
    {
@@ -43,13 +74,62 @@ class LocationDetailsViewController: UITableViewController
       
       let hudView = HUDView.HUD(inView: mainView, animated: true)
 
-      hudView.text = "Tagged"
-
-      afterDelay(2.12)
+      let location: Location
+      if let temp = locationToEdit
       {
-	 hudView.hide()
-	 self.navigationController?.popViewController(animated: true)
+	 hudView.text = "Updated"
+	 location = temp
       }
+      else
+      {
+	 hudView.text = "Tagged"
+	 location = Location(context: managedObjectContext)
+	 location.photoID = nil
+      }
+      
+      location.locationDesription = descriptionTextView.text
+      location.category = categoryName
+      location.latitude = coordinate.latitude
+      location.longitude = coordinate.longitude
+      location.date = date
+      location.placemark = placemark
+      
+      
+      if let image = image
+      {
+	 if !location.hasPhoto
+	 {
+	    location.photoID = Location.nextPhotoID() as NSNumber
+	 }
+	 
+	 if let data = image.jpegData(compressionQuality: 0.5)
+	 {
+	    do
+	    {
+	       try data.write(to: location.photoURL, options: .atomic)
+	    }
+	    catch
+	    {
+	       print("Error writing file: \(error)")
+	    }
+	 }
+      }
+      
+      
+      do
+      {
+	 try managedObjectContext.save()
+	 afterDelay(2.12)
+	 {
+	    hudView.hide()
+	    self.navigationController?.popViewController(animated: true)
+	 }
+      }
+      catch
+      {
+	 fatalCoreDataError(error)
+      }
+
    }
    
    @IBAction func cancel()
@@ -66,13 +146,35 @@ class LocationDetailsViewController: UITableViewController
       categoryLabel.text = categoryName
    }
    
-   
+   func show(image: UIImage)
+   {
+      imageView.image = image
+      imageView.isHidden = false
+      addPhotoLabel.text = ""
+      
+      imageHeight.constant = 260
+      tableView.reloadData()
+   }
    
    override func viewDidLoad()
    {
       super.viewDidLoad()
       
-      descriptionTextView.text = ""
+      listenForBackgroundNotification()
+      
+      if let location = locationToEdit
+      {
+	 title = "Edit Location"
+	 if location.hasPhoto
+	 {
+	    if let theImage = location.photoImage
+	    {
+	       show(image: theImage)
+	    }
+	 }
+      }
+      
+      descriptionTextView.text = descriptionText
       categoryLabel.text = categoryName
       
       latitudeLabel.text = String(
@@ -82,6 +184,8 @@ class LocationDetailsViewController: UITableViewController
       longitudeLabel.text = String(
 	 format: "%.8f",
 	 coordinate.longitude)
+      
+      dateLabel.text = format(date: date)
       
       if let placemark = placemark
       {
@@ -104,42 +208,21 @@ class LocationDetailsViewController: UITableViewController
    }
    
    //MARK: - Helper Methods
-   func string(from placemark: CLPlacemark) -> String
+   
+   //Formats the Address returned into the Address Cell
+   func string (from placemark: CLPlacemark) -> String
    {
-      var text = ""
-       
-	 if let temp = placemark.subThoroughfare
-	 {
-	    text = text + temp + " "
-	 }
-	 
-	 if let temp =  placemark.thoroughfare
-	 {
-	    text = text + temp + ", "
-	 }
-	 
-	 if let temp = placemark.locality
-	 {
-	    text = text + temp + ", "
-	 }
-	 
-         if let temp = placemark.administrativeArea
-         {
-	    text = text + temp + " "
-	 }
+      var line = ""
       
-	 if let temp = placemark.postalCode
-	 {
-	    text = text + temp + ", "
-	 }
+      line.add(text: placemark.subThoroughfare)
+      line.add(text: placemark.thoroughfare, separatedBy: " ")
+      line.add(text: placemark.locality, separatedBy: ", ")
+      line.add(text: placemark.administrativeArea, separatedBy: ", ")
+      line.add(text: placemark.postalCode, separatedBy: " ")
+      line.add(text: placemark.country, separatedBy: ", ")
       
-         if let temp = placemark.country
-         {
-	    text = text + temp
-         }
-      
-      return text
-      }
+      return line
+   }
       
    func format(date: Date) -> String
    {
@@ -182,7 +265,58 @@ class LocationDetailsViewController: UITableViewController
       {
 	 descriptionTextView.becomeFirstResponder()
       }
+      else if indexPath.section == 1 && indexPath.row == 0
+      {
+	 tableView.deselectRow(at: indexPath, animated: true)
+	 pickPhoto()
+      }
    }
+   
+   func pickPhoto()
+   {   //added "true || " to trick the Simulator into thinking it has a Camera and display the Alert Box to choose anyway.  This should be standard behavior IMO.
+      if true || UIImagePickerController.isSourceTypeAvailable(.camera)
+      {
+	 showPhotoMenu()
+      }
+      else
+      {
+	 choosePhotoFromLibrary()
+      }
+   }
+   
+   func showPhotoMenu()
+   {
+      let alert = UIAlertController(
+	 title: nil,
+	 message: nil,
+	 preferredStyle: .actionSheet)
+      
+      let actCancel = UIAlertAction(
+	 title: "Cancel",
+	 style: .cancel,
+	 handler: nil)
+      alert.addAction(actCancel)
+      
+      let actPhoto = UIAlertAction(
+	 title: "Take Photo",
+	 style: .default)
+      { _ in
+	 self.takePhotoWithCamera()
+      }
+      alert.addAction(actPhoto)
+      
+      let actLibrary = UIAlertAction(
+	 title: "Choose From Photo Library",
+	 style: .default)
+      { _ in
+	 self.choosePhotoFromLibrary()
+      }
+      alert.addAction(actLibrary)
+      
+      present(alert, animated: true, completion: nil)
+   }
+   
+   
    
    @objc func hideKeyboard(_ gestureRecognizer: UIGestureRecognizer)
    {
@@ -195,6 +329,78 @@ class LocationDetailsViewController: UITableViewController
       }
       descriptionTextView.resignFirstResponder()
    }
+   
+   deinit
+   {
+      print("*** deInIt \(self)")
+      NotificationCenter.default.removeObserver(observer!)
+   }
 
 }
 
+extension LocationDetailsViewController: UIImagePickerControllerDelegate, UINavigationControllerDelegate
+{
+   //MARK: - Image Helper Methods
+   
+   func takePhotoWithCamera()
+   {
+      let imagePicker = UIImagePickerController()
+      imagePicker.sourceType = .camera
+      imagePicker.delegate = self
+      imagePicker.allowsEditing = true
+      present(imagePicker, animated: true, completion: nil)
+   }
+   
+   //MARK: - Image Picker Delegates
+   func imagePickerController(
+      _ picker: UIImagePickerController,
+      didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any] )
+   {
+      image = info[UIImagePickerController.InfoKey.editedImage] as? UIImage
+      if let theImage = image
+      {
+	 show(image:theImage)
+      }
+
+      dismiss(animated: true, completion: nil)
+   }
+   
+   func imagePickerControllerDidCancel(
+      _ picker: UIImagePickerController)
+   {
+      dismiss(animated: true, completion: nil)
+   }
+   
+   func choosePhotoFromLibrary()
+   {
+      let imagePicker = UIImagePickerController()
+      imagePicker.sourceType = .photoLibrary
+      imagePicker.delegate = self
+      imagePicker.allowsEditing = true
+      
+      present(imagePicker, animated: true, completion: nil)
+   }
+   
+   
+   func listenForBackgroundNotification()
+   {
+      observer = NotificationCenter.default.addObserver(
+	 forName: UIApplication.didEnterBackgroundNotification,
+	 object: nil,
+	 queue: OperationQueue.main)
+      {	  [weak self] _ in
+	 if let weakSelf = self
+	 {
+	    if weakSelf.presentedViewController != nil
+	    {
+	       weakSelf.dismiss(animated: false, completion: nil)
+	    }
+	    
+	    weakSelf.descriptionTextView.resignFirstResponder()
+	 }
+      }
+   }
+
+   
+   
+}
